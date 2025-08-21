@@ -24,7 +24,7 @@ class ProductEvaluator:
         """
         Инициализация оценщика
         """
-        self.qwen_api_key = "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"
+        self.qwen_api_key = "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"
 
         # Инициализация EasyOCR (только русский язык)
         logger.info("Загрузка модели EasyOCR (русский язык)...")
@@ -165,7 +165,8 @@ class ProductEvaluator:
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.2,
-            "max_tokens": 1000
+            "max_tokens": 2000,  # Увеличенный лимит токенов
+            "stop": ["===КОНЕЦ ОТЧЕТА==="]  # Добавляем стоп-сигнал для завершения отчета
         }
 
         try:
@@ -188,6 +189,11 @@ class ProductEvaluator:
             # Извлечение ответа
             result = response.json()
             analysis = result['choices'][0]['message']['content'].strip()
+
+            # Проверка на полноту отчета
+            if not self._is_report_complete(analysis):
+                logger.warning("Получен неполный отчет от API, добавляем недостающие элементы...")
+                analysis = self._complete_report(analysis)
 
             logger.debug(f"Получен анализ от Qwen3: {analysis}")
             return analysis
@@ -229,6 +235,11 @@ class ProductEvaluator:
             "РЕКОМЕНДАЦИИ:\n"
             "[рекомендации]\n\n"
 
+            "ИНФОРМАЦИЯ О ПРОДУКТЕ:\n"
+            "[краткое описание продукта на основе текста этикетки]\n\n"
+
+            "===КОНЕЦ ОТЧЕТА===\n\n"  # Добавляем явный конец отчета
+
             "Требования ВОЗ:\n\n"
             f"{who_requirements}\n\n"
 
@@ -238,10 +249,71 @@ class ProductEvaluator:
             "Пожалуйста, проведи анализ и сформируй отчет в указанном формате. "
             "Если категория продукта не может быть определена, укажи 'Неизвестная категория'. "
             "Если возрастная маркировка отсутствует, укажи 'Не указана'. "
-            "Если нарушений нет, укажи 'Нарушения не обнаружены'."
+            "Если нарушений нет, укажи 'Нарушения не обнаружены'. "
+            "Убедись, что отчет содержит все необходимые разделы и полностью завершен."
         )
 
         return prompt
+
+    def _is_report_complete(self, report):
+        """
+        Проверяет, является ли отчет полным
+        """
+        # Проверяем наличие обязательных элементов
+        required_sections = [
+            "РЕЗУЛЬТАТ ОЦЕНКИ СООТВЕТСТВИЯ ПРОДУКТА ТРЕБОВАНИЯМ ВОЗ",
+            "ОПРЕДЕЛЕННАЯ КАТЕГОРИЯ:",
+            "НАЗВАНИЕ ПРОДУКТА:",
+            "ВОЗРАСТНАЯ МАРКИРОВКА:",
+            "РЕЗУЛЬТАТ:",
+            "НАЙДЕННЫЕ НАРУШЕНИЯ:",
+            "РЕКОМЕНДАЦИИ:",
+            "ИНФОРМАЦИЯ О ПРОДУКТЕ:"
+        ]
+
+        for section in required_sections:
+            if section not in report:
+                return False
+
+        # Проверяем, не обрывается ли отчет посреди слова
+        if re.search(r'\w{5,}\s*$', report):
+            return False
+
+        # Проверяем, завершается ли отчет явным концом
+        if not report.endswith("===КОНЕЦ ОТЧЕТА==="):
+            return False
+
+        return True
+
+    def _complete_report(self, incomplete_report):
+        """
+        Дополняет неполный отчет недостающими элементами
+        """
+        # Создаем шаблон для недостающих разделов
+        report_parts = incomplete_report.split("НАЙДЕННЫЕ НАРУШЕНИЯ:")
+
+        # Если отчет обрывается на НАЗВАНИИ ПРОДУКТА
+        if "НАЗВАНИЕ ПРОДУКТА:" in incomplete_report and "ВОЗРАСТНАЯ МАРКИРОВКА:" not in incomplete_report:
+            # Добавляем недостающие разделы
+            incomplete_report += "\nВОЗРАСТНАЯ МАРКИРОВКА: Не указана\n\nРЕЗУЛЬТАТ: Не удалось определить возрастную маркировку\n\nНАЙДЕННЫЕ НАРУШЕНИЯ:\n1. Отсутствует возрастная маркировка (должна быть 6-36 месяцев)"
+
+        # Если отчет обрывается на РЕЗУЛЬТАТЕ
+        elif "РЕЗУЛЬТАТ:" in incomplete_report and "НАЙДЕННЫЕ НАРУШЕНИЯ:" not in incomplete_report:
+            incomplete_report += "\n\nНАЙДЕННЫЕ НАРУШЕНИЯ:\n1. Не удалось полностью проанализировать продукт"
+
+        # Если отчет обрывается на НАРУШЕНИЯХ
+        elif "НАЙДЕННЫЕ НАРУШЕНИЯ:" in incomplete_report and "РЕКОМЕНДАЦИИ:" not in incomplete_report:
+            incomplete_report += "\n\nРЕКОМЕНДАЦИИ:\n❌ Не удалось завершить анализ. Пожалуйста, отправьте более четкое фото этикетки."
+
+        # Если отчет обрывается на РЕКОМЕНДАЦИЯХ
+        elif "РЕКОМЕНДАЦИИ:" in incomplete_report and "ИНФОРМАЦИЯ О ПРОДУКТЕ:" not in incomplete_report:
+            incomplete_report += "\n\nИНФОРМАЦИЯ О ПРОДУКТЕ:\nНе удалось полностью извлечь информацию о продукте."
+
+        # Добавляем конец отчета, если его нет
+        if not incomplete_report.endswith("===КОНЕЦ ОТЧЕТА==="):
+            incomplete_report += "\n\n===КОНЕЦ ОТЧЕТА==="
+
+        return incomplete_report
 
     def _create_fallback_report(self, product_text):
         """
@@ -282,9 +354,14 @@ class ProductEvaluator:
         report += f"НАЗВАНИЕ ПРОДУКТА: {product_name}\n"
         report += f"ВОЗРАСТНАЯ МАРКИРОВКА: {age_label}\n\n"
         report += "РЕЗУЛЬТАТ: Не удалось провести полный анализ из-за недоступности API\n\n"
+        report += "НАЙДЕННЫЕ НАРУШЕНИЯ:\n"
+        report += "1. Не удалось полностью проверить соответствие требованиям ВОЗ\n\n"
         report += "РЕКОМЕНДАЦИИ:\n"
         report += "❌ Не удалось провести полный анализ. Пожалуйста, повторите попытку позже.\n"
-        report += "Система временно использует упрощенный анализ на основе ключевых слов."
+        report += "Система временно использует упрощенный анализ на основе ключевых слов.\n\n"
+        report += "ИНФОРМАЦИЯ О ПРОДУКТЕ:\n"
+        report += f"Извлеченный текст: {product_text[:200]}{'...' if len(product_text) > 200 else ''}\n\n"
+        report += "===КОНЕЦ ОТЧЕТА==="
 
         return report
 
@@ -308,6 +385,10 @@ class ProductEvaluator:
 
         # Анализ с помощью Qwen3 API
         analysis = self.analyze_with_qwen(who_requirements, product_text)
+
+        # Убедимся, что отчет полный
+        if not self._is_report_complete(analysis):
+            analysis = self._complete_report(analysis)
 
         logger.info("Оценка продукта завершена")
         return analysis
