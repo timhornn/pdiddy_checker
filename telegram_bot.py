@@ -69,62 +69,39 @@ def handle_photo(message):
                     "3. Проверить освещение на фото"
                 )
 
-            # Отправка результата по частям
-            if len(analysis) > MAX_MESSAGE_LENGTH:
-                # Разбиваем на логические части
-                parts = split_into_logical_parts(analysis, MAX_MESSAGE_LENGTH)
+            # Удаляем сообщение "Анализирую изображение"
+            try:
+                bot.delete_message(message.chat.id, processing_msg.message_id)
+            except Exception as delete_error:
+                logger.warning(f"Не удалось удалить сообщение: {str(delete_error)}")
 
-                # Удаляем сообщение "Анализирую изображение"
+            # Создаем временный TXT-файл
+            txt_path = f"report_{message.message_id}.txt"
+            with open(txt_path, 'w', encoding='utf-8') as txt_file:
+                txt_file.write(analysis)
+
+            # Отправляем файл
+            with open(txt_path, 'rb') as txt_file:
+                bot.send_document(
+                    message.chat.id,
+                    txt_file,
+                    caption="📄 Результат анализа детского питания"
+                )
+
+            # Удаляем временный TXT-файл
+            if os.path.exists(txt_path):
+                os.remove(txt_path)
+
+        except Exception as eval_error:
+            logger.error(f"Ошибка при оценке продукта: {str(eval_error)}")
+            try:
+                # Удаляем сообщение "Анализирую изображение", если оно существует
                 try:
                     bot.delete_message(message.chat.id, processing_msg.message_id)
                 except:
                     pass
 
-                # Отправляем каждую часть
-                for i, part in enumerate(parts):
-                    # Добавляем номер части, если их больше одной
-                    if len(parts) > 1:
-                        header = f"📌 РЕЗУЛЬТАТ АНАЛИЗА (часть {i + 1}/{len(parts)})\n\n"
-                        part = header + part
-
-                    # Отправляем часть
-                    bot.send_message(message.chat.id, part)
-            else:
-                # Редактируем сообщение с результатом
-                try:
-                    bot.edit_message_text(
-                        chat_id=message.chat.id,
-                        message_id=processing_msg.message_id,
-                        text=analysis
-                    )
-                except Exception as edit_error:
-                    logger.warning(f"Не удалось отредактировать сообщение: {str(edit_error)}")
-                    # Если редактирование не удалось, отправляем новое сообщение
-                    bot.send_message(message.chat.id, analysis)
-                    # И удаляем старое сообщение
-                    try:
-                        bot.delete_message(message.chat.id, processing_msg.message_id)
-                    except:
-                        pass
-
-        except Exception as eval_error:
-            logger.error(f"Ошибка при оценке продукта: {str(eval_error)}")
-            try:
-                bot.edit_message_text(
-                    chat_id=message.chat.id,
-                    message_id=processing_msg.message_id,
-                    text=(
-                        "⚠️ Произошла ошибка при анализе продукта.\n\n"
-                        "Возможные причины:\n"
-                        "- Сложная структура этикетки\n"
-                        "- Слишком мелкий шрифт\n"
-                        "- Низкое качество изображения\n\n"
-                        "Попробуйте отправить более четкое фото этикетки."
-                    )
-                )
-            except:
-                # Если не удалось отредактировать, отправляем новое сообщение
-                bot.reply_to(message, (
+                bot.send_message(message.chat.id, (
                     "⚠️ Произошла ошибка при анализе продукта.\n\n"
                     "Возможные причины:\n"
                     "- Сложная структура этикетки\n"
@@ -132,8 +109,10 @@ def handle_photo(message):
                     "- Низкое качество изображения\n\n"
                     "Попробуйте отправить более четкое фото этикетки."
                 ))
+            except Exception as send_error:
+                logger.error(f"Не удалось отправить сообщение об ошибке: {str(send_error)}")
 
-        # Удаление временного файла
+        # Удаление временного файла изображения
         if os.path.exists(image_path):
             os.remove(image_path)
 
@@ -142,80 +121,21 @@ def handle_photo(message):
         try:
             # Пытаемся удалить сообщение "Анализирую изображение", если оно существует
             if 'processing_msg' in locals():
-                bot.delete_message(message.chat.id, processing_msg.message_id)
-        except:
-            pass
+                try:
+                    bot.delete_message(message.chat.id, processing_msg.message_id)
+                except:
+                    pass
 
-        error_message = (
-            "❌ Критическая ошибка при обработке изображения.\n\n"
-            "Пожалуйста, попробуйте:\n"
-            "1. Отправить фото в лучшем качестве\n"
-            "2. Убедиться, что этикетка полностью видна\n"
-            "3. Проверить освещение на фото\n\n"
-            "Если проблема сохраняется, свяжитесь с администратором."
-        )
-        try:
-            bot.reply_to(message, error_message)
+            bot.reply_to(message, (
+                "❌ Критическая ошибка при обработке изображения.\n\n"
+                "Пожалуйста, попробуйте:\n"
+                "1. Отправить фото в лучшем качестве\n"
+                "2. Убедиться, что этикетка полностью видна\n"
+                "3. Проверить освещение на фото\n\n"
+                "Если проблема сохраняется, свяжитесь с администратором."
+            ))
         except Exception as reply_error:
             logger.error(f"Не удалось отправить сообщение об ошибке: {str(reply_error)}")
-
-
-def split_into_logical_parts(text, max_length):
-    """
-    Разбивает текст на логические части, сохраняя структуру отчета
-    """
-    # Сначала попробуем разбить по заголовкам
-    sections = re.split(r'(\n[А-Я][^:]+:\s*\n)', text)
-
-    parts = []
-    current_part = ""
-
-    # Обрабатываем разделы
-    for i in range(len(sections)):
-        # Если это заголовок, объединяем с содержимым
-        if i > 0 and re.match(r'\n[А-Я][^:]+:\s*\n', sections[i]):
-            section = sections[i] + sections[i + 1] if i + 1 < len(sections) else sections[i]
-            i += 1
-        else:
-            section = sections[i]
-
-        # Если текущая часть + новый раздел не превышает лимит
-        if len(current_part) + len(section) <= max_length:
-            current_part += section
-        else:
-            # Если текущая часть не пустая, сохраняем ее
-            if current_part.strip():
-                parts.append(current_part.strip())
-                current_part = ""
-
-            # Если раздел сам по себе меньше лимита
-            if len(section) <= max_length:
-                current_part = section
-            else:
-                # Делим длинный раздел на абзацы
-                paragraphs = section.split('\n\n')
-                temp_section = ""
-
-                for p in paragraphs:
-                    if len(temp_section) + len(p) + 2 <= max_length:
-                        temp_section += p + "\n\n"
-                    else:
-                        if temp_section.strip():
-                            parts.append(temp_section.strip())
-                        temp_section = p + "\n\n"
-
-                if temp_section.strip():
-                    current_part = temp_section
-
-    # Добавляем оставшуюся часть
-    if current_part.strip():
-        parts.append(current_part.strip())
-
-    # Если все же получился слишком длинный текст, делим на равные части
-    if not parts:
-        parts = [text[i:i + max_length] for i in range(0, len(text), max_length)]
-
-    return parts
 
 
 # Обработчик всех остальных сообщений
@@ -246,6 +166,10 @@ def main():
     # Запуск бота
     logger.info("Бот запущен и готов к работе")
     bot.polling(none_stop=True)
+
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":
